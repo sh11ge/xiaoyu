@@ -1,0 +1,29 @@
+{
+  "name": "dsh-dream",
+  "version": "0.1.0",
+  "description": "让 agent 做梦：空闲时从最近的对话、刷过的视频、记忆本子里的句子里各挑几句，拼成一个梦存成 markdown，7 天后自动清掉。零依赖，装完不管它就行。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dream",
+    "memory"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

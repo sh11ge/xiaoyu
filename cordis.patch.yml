@@ -1,0 +1,13 @@
+# dsh-dream 的 bundle patch 层。
+#
+# package.json 的 `dsh.bundle.patch` 指向这里：DSH 的 loader 把它插进 profile 的
+# 组合树。`name` 必须与安装的包名一致，否则 loader 只 warn 然后跳过这一行。
+#
+# 想改梦放在哪儿 / 素材从哪儿读，就在 config 里写；不写会自动探测。
+- insert:
+    - id: dsh-dream
+      name: dsh-dream
+      config:
+        auto: true
+        intervalMin: 30
+        keepDays: 7

@@ -1,0 +1,5 @@
+node_modules/
+_test/
+*.zip
+dreams/
+.DS_Store
