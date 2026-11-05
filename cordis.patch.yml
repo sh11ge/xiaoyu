@@ -9,5 +9,7 @@
       name: dsh-dream
       config:
         auto: true
-        intervalMin: 30
+        intervalMin: 15
+        idleMinutes: 10
+        chance: 1
         keepDays: 7

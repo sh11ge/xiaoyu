@@ -31,13 +31,14 @@ const DEFAULTS = {
   dreamDir: '',
   materialHome: '',
   auto: true,
-  intervalMin: 30,
+  intervalMin: 15,
   keepDays: 7,
   sessionLookbackDays: 5,
   hourStart: 9,
   hourEnd: 23,
-  idleMinutes: 15,
-  chance: 0.5,
+  idleMinutes: 10,
+  // 1 = 每格都做（一天还是一个，撞上第一个空闲窗口就做）；想回到「有时没梦」就调小
+  chance: 1,
 }
 
 /** 注入类噪音：这些不是 sg 说的话，别进梦。 */

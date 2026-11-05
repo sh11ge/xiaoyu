@@ -38,7 +38,7 @@ Win 上家目录一般是 `D:\dsh-home`，macOS / Linux 是 `~/.dsh`，按你自
       name: dsh-dream
       config:
         auto: true
-        intervalMin: 30
+        intervalMin: 15
         keepDays: 7
 ```
 
@@ -49,13 +49,13 @@ Win 上家目录一般是 `D:\dsh-home`，macOS / Linux 是 `~/.dsh`，按你自
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `auto` | `true` | 关掉就只留 `dream` 工具，不再自动做梦 |
-| `intervalMin` | `30` | 多久检查一次（分钟） |
+| `intervalMin` | `15` | 多久检查一次（分钟） |
 | `keepDays` | `7` | 梦留几天 |
 | `dreamDir` | `<家目录>/dreams` | 梦存哪儿 |
 | `materialHome` | 自动探测 | 素材（sessions / memory / bili-duty）在哪儿 |
 | `hourStart` / `hourEnd` | `9` / `23` | 只在这个钟点做梦 |
-| `idleMinutes` | `15` | 最近这么久有人说话就不做 |
-| `chance` | `0.5` | 每个整点掷硬币的概率 |
+| `idleMinutes` | `10` | 最近这么久有人说话就不做 |
+| `chance` | `1` | 每个整点掷硬币的概率，`1` = 每格都做（一天仍只做一个） |
 
 ## 素材从哪儿来
 
