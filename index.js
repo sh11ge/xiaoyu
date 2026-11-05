@@ -16,6 +16,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 
 export const name = 'dsh-dream'
@@ -39,6 +40,9 @@ const DEFAULTS = {
   idleMinutes: 10,
   // 1 = 每格都做（一天还是一个，撞上第一个空闲窗口就做）；想回到「有时没梦」就调小
   chance: 1,
+  // 做完梦往哪个会话里说一声；留空 = 自动挑最近聊过的那个
+  targetSession: '',
+  notify: true,
 }
 
 /** 注入类噪音：这些不是 sg 说的话，别进梦。 */
@@ -244,6 +248,63 @@ function safeFiles(dir, ext) {
     return readdirSync(dir).filter((f) => f.endsWith(ext)).sort()
   } catch {
     return []
+  }
+}
+
+// ---------------- 提醒：做完梦往会话里说一声 ----------------
+
+/** 会话对象上的 id 字段可能是 id / sessionId / key …，挨个试。 */
+export function sessionIdOf(session) {
+  if (!session) return ''
+  for (const k of ['id', 'sessionId', 'key', 'sessionKey', 'sid']) {
+    try {
+      const v = session[k]
+      if (typeof v === 'string' && v) return v
+    } catch {}
+  }
+  return ''
+}
+
+/** 会话 id 有两种写法（`xxx` / `session-xxx`），比较前先去掉前缀。 */
+export function sessionKey(value) {
+  const s = String(value == null ? '' : value).trim()
+  return s.startsWith('session-') ? s.slice('session-'.length) : s
+}
+
+/** 裸 UUID 目录是子代理/中间内容，不是「伙伴住的会话」。 */
+const isSessionDir = (sid) => !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(sid || ''))
+
+/** 挑「最近真的聊过、且没归档」的那个会话；挑不到返回 ''。 */
+export function pickRecentSession(home) {
+  try {
+    const sessRoot = join(home, 'sessions')
+    const cacheDir = join(home, 'storages', 'session_projcache', 'sessions')
+    const archived = new Set()
+    try {
+      const ws = JSON.parse(readFileSync(join(home, 'storages', 'workspace.json'), 'utf8'))
+      for (const id of ws?.global?.archivedSessionIds || []) archived.add(String(id))
+    } catch {}
+    let best = null
+    for (const area of safeDirs(sessRoot)) {
+      for (const sid of safeDirs(join(sessRoot, area))) {
+        if (!isSessionDir(sid)) continue
+        if (archived.has(sid)) continue
+        if (!existsSync(join(sessRoot, area, sid, 'session.v4.jsonl.zstd'))) continue
+        let at = 0
+        let blank = false
+        try {
+          const meta = JSON.parse(readFileSync(join(cacheDir, sid + '.json'), 'utf8'))
+            ?.record?.rows?.sessionListMetadata?.val || {}
+          at = Number(meta.lastPromptAt || 0)
+          blank = Boolean(meta.blank)
+        } catch {}
+        if (blank) continue
+        if (!best || at > best.at) best = { id: sid, at }
+      }
+    }
+    return best ? best.id : ''
+  } catch {
+    return ''
   }
 }
 
@@ -550,13 +611,58 @@ export function apply(ctx, config = {}) {
     },
   })))
 
+  // 做完梦往会话里说一声（sg 2026-11-05 要的「做完能在这个对话区发一下」）。
+  // 自己不去发言，只往那个会话 followup 一句话，让那边的伙伴把梦念出来。
+  const notifyDream = async (result) => {
+    if (cfg.notify === false) return false
+    const home = findHome(cfg.materialHome)
+    let target = String(cfg.targetSession || '').trim()
+    if (!target) target = pickRecentSession(home)
+    if (!target) return false
+    let agents
+    try {
+      agents = ctx.agents
+    } catch {}
+    let agent = null
+    try {
+      agent = agents?.get?.(target) || null
+    } catch {}
+    if (!agent) {
+      try {
+        agent =
+          (agents?.list?.() || []).find((a) => sessionKey(sessionIdOf(a.session)) === sessionKey(target)) || null
+      } catch {}
+    }
+    if (!agent || typeof agent.followup !== 'function') return false
+    const text =
+      `〔梦醒了〕刚才自己做了个梦，存在 ${result.path}\n` +
+      `把这个梦讲给老大听吧（一句自己的话起头，别念上面的统计）：\n\n${result.text}`
+    try {
+      await agent.followup({
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text }],
+        source: { kind: 'dsh-dream' },
+      })
+      return true
+    } catch (error) {
+      try {
+        ctx.logger?.('dsh-dream')?.warn?.('梦做完了，但没能送到会话：', error)
+      } catch {}
+      return false
+    }
+  }
+
   if (cfg.auto !== false) {
     const intervalMs = Math.max(5, Number(cfg.intervalMin) || 30) * 60000
     let timer = null
     const tick = () => {
       try {
         if (!checkAuto(cfg).go) return
-        makeDream(cfg)
+        const result = makeDream(cfg)
+        if (result && result.ok) {
+          notifyDream(result).catch(() => {})
+        }
       } catch (error) {
         try {
           ctx.logger?.('dsh-dream')?.warn?.('做梦失败：', error)
