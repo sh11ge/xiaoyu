@@ -56,6 +56,8 @@ Win 上家目录一般是 `D:\dsh-home`，macOS / Linux 是 `~/.dsh`，按你自
 | `hourStart` / `hourEnd` | `9` / `23` | 只在这个钟点做梦 |
 | `idleMinutes` | `10` | 最近这么久有人说话就不做 |
 | `chance` | `1` | 每个整点掷硬币的概率，`1` = 每格都做（一天仍只做一个） |
+| `notify` | `true` | 做完往会话里说一声（followup） |
+| `targetSession` | `''` | 说给哪个会话；留空 = 自动挑最近聊过的那个 |
 
 ## 素材从哪儿来
 
