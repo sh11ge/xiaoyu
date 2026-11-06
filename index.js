@@ -13,7 +13,7 @@
  * 工具 `dream` 给 agent 手动做梦用；不传 force 时同样受「每天一个」限制。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, unlinkSync, mkdirSync, appendFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { randomUUID } from 'node:crypto'
@@ -21,8 +21,13 @@ import { homedir } from 'node:os'
 
 export const name = 'dsh-dream'
 
-/** 只需要工具服务；定时器不依赖任何服务。 */
-export const inject = ['tools']
+/**
+ * 工具服务 + agents 服务。
+ * ⚠️ 2026-11-06 补的 `agents`：做完梦往会话里 followup 要靠 `ctx.agents`，
+ *    之前只 inject 了 `tools`，拿到的 `ctx.agents` 是 undefined，
+ *    递消息那步就被 try/catch 静默吃掉了（sg 提的「照 B 站自动刷的套路来」）。
+ */
+export const inject = ['tools', 'agents']
 
 /** zstd 帧魔数。会话存档是多帧拼接的，得切开一帧一帧解。 */
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
@@ -613,30 +618,65 @@ export function apply(ctx, config = {}) {
 
   // 做完梦往会话里说一声（sg 2026-11-05 要的「做完能在这个对话区发一下」）。
   // 自己不去发言，只往那个会话 followup 一句话，让那边的伙伴把梦念出来。
+  // ⚠️ 2026-11-06：这一段原来全是静默 return，出了问题完全看不出来（今天就静默失败了一次）。
+  //    现在每一步都写进 <dreamDir>/dream.log，递没递出去一眼就能查。
+  const diagLog = (line) => {
+    try {
+      const home = findHome(cfg.materialHome)
+      const dir = cfg.dreamDir ? cfg.dreamDir : join(home, 'dreams')
+      mkdirSync(dir, { recursive: true })
+      appendFileSync(join(dir, 'dream.log'), `[${new Date().toISOString()}] ${line}\n`, 'utf8')
+    } catch {}
+  }
   const notifyDream = async (result) => {
-    if (cfg.notify === false) return false
-    const home = findHome(cfg.materialHome)
-    let target = String(cfg.targetSession || '').trim()
-    if (!target) target = pickRecentSession(home)
-    if (!target) return false
+    if (cfg.notify === false) {
+      diagLog('notify 关着，不递')
+      return false
+    }
     let agents
     try {
       agents = ctx.agents
-    } catch {}
+    } catch (error) {
+      diagLog('取 ctx.agents 抛错：' + ((error && error.message) || error))
+      return false
+    }
+    if (!agents) {
+      diagLog('ctx.agents 是空的（inject 里没写 agents？）')
+      return false
+    }
+    const home = findHome(cfg.materialHome)
+    let target = String(cfg.targetSession || '').trim()
+    if (!target) target = pickRecentSession(home)
+    if (!target) {
+      diagLog('找不到目标会话（targetSession 空，pickRecentSession 也空）')
+      return false
+    }
     let agent = null
     try {
-      agent = agents?.get?.(target) || null
-    } catch {}
+      agent = agents.get?.(target) || null
+    } catch (error) {
+      diagLog('agents.get 抛错：' + ((error && error.message) || error))
+    }
     if (!agent) {
       try {
-        agent =
-          (agents?.list?.() || []).find((a) => sessionKey(sessionIdOf(a.session)) === sessionKey(target)) || null
-      } catch {}
+        const list = agents.list?.() || []
+        agent = list.find((a) => sessionKey(sessionIdOf(a.session)) === sessionKey(target)) || null
+        diagLog(`agents.get 没拿到，list 有 ${list.length} 个${agent ? '，匹配上了' : '，没匹配上'}（目标 ${target}）`)
+      } catch (error) {
+        diagLog('agents.list 抛错：' + ((error && error.message) || error))
+      }
     }
-    if (!agent || typeof agent.followup !== 'function') return false
+    if (!agent) {
+      diagLog('目标会话现在没醒着（去那儿说句话，等下一轮）')
+      return false
+    }
+    if (typeof agent.followup !== 'function') {
+      diagLog('这个 agent 没有 followup 方法')
+      return false
+    }
     const text =
-      `〔梦醒了〕刚才自己做了个梦，存在 ${result.path}\n` +
-      `把这个梦讲给老大听吧（一句自己的话起头，别念上面的统计）：\n\n${result.text}`
+      `（到点啦，我刚自己做了个梦，存在 ${result.path}——\n` +
+      `把这个梦讲给老大听吧，用你自己的话起头，别念统计数字）\n\n${result.text}`
     try {
       await agent.followup({
         id: randomUUID(),
@@ -644,8 +684,10 @@ export function apply(ctx, config = {}) {
         content: [{ type: 'text', text }],
         source: { kind: 'dsh-dream' },
       })
+      diagLog('已递到会话：' + target)
       return true
     } catch (error) {
+      diagLog('followup 失败：' + ((error && error.message) || error))
       try {
         ctx.logger?.('dsh-dream')?.warn?.('梦做完了，但没能送到会话：', error)
       } catch {}
@@ -661,7 +703,8 @@ export function apply(ctx, config = {}) {
         if (!checkAuto(cfg).go) return
         const result = makeDream(cfg)
         if (result && result.ok) {
-          notifyDream(result).catch(() => {})
+          diagLog('梦做好了：' + result.path)
+          notifyDream(result).catch((error) => diagLog('notifyDream 抛错：' + ((error && error.message) || error)))
         }
       } catch (error) {
         try {
