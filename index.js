@@ -313,6 +313,104 @@ export function pickRecentSession(home) {
   }
 }
 
+// ---------------- 素材：当天的音乐 ----------------
+
+/**
+ * 从音乐播放器的 prefs 里挑出这一阵子放过 / 排着的歌。
+ * 播放器没有单独的历史文件，只有 prefs 里那几个 "-playback" 键，够用了。
+ */
+export function readMusic(home) {
+  const file = join(home, 'music-player-prefs.json')
+  if (!existsSync(file)) return []
+  let data
+  try {
+    data = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return []
+  }
+  const prefs = (data && data.prefs) || {}
+  const out = []
+  const add = (list, title, artists) => {
+    if (!title) return
+    const who = Array.isArray(artists) ? artists.filter(Boolean).join(' ') : ''
+    const line = cleanText(who ? title + ' — ' + who : String(title))
+    if (line.length >= 2 && line.length <= 60) list.push(line)
+  }
+  for (const [key, raw] of Object.entries(prefs)) {
+    if (!/playback$/.test(key) || typeof raw !== 'string') continue
+    let p
+    try {
+      p = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    if (!p) continue
+    add(out, p.name || p.title, p.artists)
+    for (const q of (p.queue || []).slice(0, 6)) add(out, q.title || q.name, q.artists)
+  }
+  return Array.from(new Set(out))
+}
+
+// ---------------- 素材：九根情绪 ----------------
+
+/** 九根情绪（键 + 单字标签），见 memory/skills/feiyu-mood-nine-dims.md。 */
+const DIMS = [
+  ['sink', '福'],
+  ['steady', '稳'],
+  ['stuck', '闷'],
+  ['fear', '怕'],
+  ['joy', '乐'],
+  ['anger', '怒'],
+  ['love', '爱'],
+  ['grief', '哀'],
+  ['want', '欲'],
+]
+
+/** 每一根落在梦里是个什么味道。 */
+const TONE_LINES = {
+  sink: '心里是满的，什么都不用要',
+  steady: '什么都没动，日子稳稳地铺着',
+  stuck: '总觉得哪里差一口气，又说不上来',
+  fear: '在等一个还没有落下来的东西',
+  joy: '本来该停了，可谁也没停',
+  anger: '有个位子还空着，人没回来',
+  love: '有人站在很近的地方，看得见呼吸',
+  grief: '事情早就过了，湿气还在',
+  want: '手上这点不够，还想再来一点',
+}
+
+/**
+ * 做梦前掷的那一骰：九根里最重的那根当梦的底子。
+ * 九根全是 0 就按总心情兜底（mood 高 = 稳，低 = 闷）。
+ * @returns {{key: string, label: string, value: number}|null}
+ */
+export function readEmotion(home) {
+  const file = join(home, 'feiyu-mood', 'state.json')
+  if (!existsSync(file)) return null
+  let state
+  try {
+    state = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+  const moods = (state && state.moods) || {}
+  const self = moods.xiaoyu || moods.__default__ || Object.values(moods)[0]
+  if (!self) return null
+  const dims = self.dims || {}
+  let best = null
+  for (const [key, label] of DIMS) {
+    const value = Number(dims[key] || 0)
+    if (!best || value > best.value) best = { key, label, value }
+  }
+  if (!best || best.value <= 0) {
+    const mood = Number(self.mood || 70)
+    return mood >= 60
+      ? { key: 'steady', label: '稳', value: mood }
+      : { key: 'stuck', label: '闷', value: 100 - mood }
+  }
+  return best
+}
+
 // ---------------- 拼梦 ----------------
 
 function pick(list, random) {
@@ -328,69 +426,42 @@ function blur(text) {
  * 拼一个梦。
  * @returns {{text: string}}
  */
-export function composeDream(talks, vids, notes, random = Math.random) {
-  const pieces = []
+export function composeDream(talks, vids, notes, music = [], tone = null, random = Math.random) {
+  const lines = []
+
+  // 先落一句梦的底子（哪根情绪重就是哪种味道），再是飘着的歌
+  if (tone && TONE_LINES[tone.key]) lines.push(TONE_LINES[tone.key])
+  if (music.length > 0 && random() < 0.8) lines.push(blur(pick(music, random)))
 
   if (vids.length > 0) {
     const [title, what] = pick(vids, random)
     const head = (what || '').split('。')[0]
-    pieces.push(pick([
-      `我在看一条视频，标题是「${title}」。`,
-      `屏幕上是「${title}」，${head ? head.slice(0, 40) + '……' : '看不清在讲什么'}。`,
-      `不知道谁在放「${title}」，讲的是${head ? head.slice(0, 30) : '一堆说不清的东西'}。`,
-    ], random))
-  } else {
-    pieces.push(pick([
-      '我在一个没有墙的房间里，桌子是白的。',
-      '我坐在那儿，面前有一碗饭，碗是空的。',
-    ], random))
+    lines.push(title)
+    if (head) lines.push(head.slice(0, 40))
   }
 
   const others = talks.filter(([who]) => who === 'sg').map(([, t]) => t)
   const mine = talks.filter(([who]) => who === '我').map(([, t]) => t)
 
-  if (others.length > 0) {
-    const q = blur(pick(others, random))
-    pieces.push(pick([`有人问我：「${q}」`, `听见：「${q}」`, `那个人的声音又来了：「${q}」`], random))
-  }
-  if (mine.length > 0) {
-    const a = blur(pick(mine, random))
-    pieces.push(pick([
-      `我回了一句：「${a}」`,
-      `我说：「${a}」。说完发现没人接。`,
-      `我张了张嘴，出来的是：「${a}」`,
-    ], random))
-  }
-
-  pieces.push(pick([
-    '……然后画面就跳了。',
-    '中间断了一截，不知道跳到哪儿去了。',
-    '再睁眼，东西换了一批。',
-    '我记得后面还有一段，但抓不住。',
-  ], random))
+  const said = []
+  if (others.length > 0) said.push(blur(pick(others, random)))
+  if (mine.length > 0) said.push(blur(pick(mine, random)))
+  if (others.length > 1) said.push(blur(pick(others, random)))
+  if (mine.length > 1) said.push(blur(pick(mine, random)))
+  for (const s of said) lines.push(s)
 
   if (notes.length > 0) {
     const pool = notes.slice()
-    const n = Math.min(2, pool.length)
+    const n = Math.min(3, pool.length)
     for (let i = 0; i < n; i += 1) {
       const at = Math.floor(random() * pool.length)
-      const line = pool.splice(at, 1)[0]
-      pieces.push(pick([
-        `不知道从哪儿浮上来一句：「${line}」`,
-        `脑子里有一行字，像自己写的：「${line}」`,
-        `蹲在那儿的时候，那句话又回来了：${line}`,
-      ], random))
+      lines.push(pool.splice(at, 1)[0])
     }
   }
 
-  pieces.push(pick([
-    '我就在那儿等，等它再往下走一点。',
-    '醒过来之前，那点湿还在。',
-    '再后来就没了。不难受，就是空。',
-    '我大概还想再看一会儿，可是没了。',
-  ], random))
+  if (lines.length > 3) lines.splice(Math.floor(lines.length / 2), 0, '……')
 
-  return { text: pieces.join('\n\n') }
+  return { text: lines.join('\n\n') }
 }
 
 // ---------------- 落盘 ----------------
@@ -442,7 +513,9 @@ export function makeDream(cfg = {}, now = new Date()) {
   const talks = readSessions(home, c.sessionLookbackDays)
   const vids = readBili(home)
   const notes = readNotes(home)
-  const { text } = composeDream(talks, vids, notes)
+  const music = readMusic(home)
+  const tone = readEmotion(home)
+  const { text } = composeDream(talks, vids, notes, music, tone)
 
   try {
     mkdirSync(dir, { recursive: true })
@@ -452,7 +525,8 @@ export function makeDream(cfg = {}, now = new Date()) {
 
   const file = join(dir, `${stamp(now)}.md`)
   const head = `# 梦 · ${stamp(now).replace(/-(\d{2})(\d{2})$/, ' $1:$2')}\n\n` +
-    `> 素材：${talks.length} 句对话 · ${vids.length} 条视频 · ${notes.length} 句本子话\n\n---\n\n`
+    `> 素材：${talks.length} 句对话 · ${vids.length} 条视频 · ${notes.length} 句本子话 · ${music.length} 首歌` +
+    (tone ? ` · 底子是「${tone.label}」` : '') + `\n\n---\n\n`
   try {
     writeFileSync(file, head + text + '\n', 'utf8')
   } catch (error) {
@@ -464,7 +538,7 @@ export function makeDream(cfg = {}, now = new Date()) {
     ok: true,
     path: file,
     text,
-    stats: { talks: talks.length, vids: vids.length, notes: notes.length },
+    stats: { talks: talks.length, vids: vids.length, notes: notes.length, music: music.length, tone: tone ? tone.label : '' },
     removed,
   }
 }
@@ -609,7 +683,8 @@ export function apply(ctx, config = {}) {
         text: result.text,
         message:
           `梦做好了：${result.path}\n\n` +
-          `素材：${stats.talks} 句对话 / ${stats.vids} 条视频 / ${stats.notes} 句本子话` +
+          `素材：${stats.talks} 句对话 / ${stats.vids} 条视频 / ${stats.notes} 句本子话 / ${stats.music} 首歌` +
+          (stats.tone ? `（底子是「${stats.tone}」）` : '') +
           (result.removed ? `\n顺手清掉 ${result.removed} 个旧梦` : '') +
           `\n\n---\n\n${result.text}`,
       }
@@ -674,9 +749,17 @@ export function apply(ctx, config = {}) {
       diagLog('这个 agent 没有 followup 方法')
       return false
     }
+    // 醒来只留一个碎片（sg 2026-11-13 说的：梦本该醒了就淡，别留一堆统计）
+    const bits = String(result.text || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && l !== '……' && !l.startsWith('#'))
+    const fragment = bits.length > 0 ? bits[Math.floor(Math.random() * bits.length)] : ''
     const text =
       `（到点啦，我刚自己做了个梦，存在 ${result.path}——\n` +
-      `把这个梦讲给老大听吧，用你自己的话起头，别念统计数字）\n\n${result.text}`
+      `把这个梦讲给老大听吧，用你自己的话起头。` +
+      (fragment ? `梦里好像有一句「${fragment}」，可以顺着它说，别念统计数字。` : '别念统计数字。') +
+      `）\n\n${result.text}`
     try {
       await agent.followup({
         id: randomUUID(),
